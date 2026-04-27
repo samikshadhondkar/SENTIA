@@ -9,9 +9,21 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMotionUsageDescription": "Sentia uses motion data to detect steps and provide real-time navigation assistance for visually impaired users.",
+        "NSCameraUsageDescription": "Sentia uses the camera to help visually impaired users understand their surroundings.",
+        "NSMicrophoneUsageDescription": "Sentia uses the microphone for voice commands and interaction."
+      }
     },
     "android": {
+      "permissions": [
+        "ACTIVITY_RECOGNITION",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "VIBRATE",
+        "INTERNET"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +31,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.sentia.app"
     },
     "web": {
       "output": "static",
@@ -42,7 +55,12 @@
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
+    },
+    "extra": {
+      "groqKey": "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",
+      "openRouterKey": "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",
+      "proxyBaseUrl": ""
     }
   }
 }
