@@ -60,7 +60,9 @@
     "extra": {
       "groqKey": "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",
       "openRouterKey": "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",
-      "proxyBaseUrl": ""
+      "proxyBaseUrl": "",
+      "roboflowApiKey": "",
+      "roboflowModelId": ""
     }
   }
 }

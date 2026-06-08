@@ -38,26 +38,14 @@ import {
   SHAKE_THRESHOLD,
   SILENCE_BUFFER_MS,
   USE_DIRECT,
-  WWM_CONTEXT_WINDOW,
-  WWM_IMG_QUALITY,
-  WWM_IMG_WIDTH,
-  WWM_INTERVAL_CAUTION,
-  WWM_INTERVAL_DANGER,
-  WWM_INTERVAL_STOP,
-  WWM_MAX_CONSECUTIVE_ERRORS,
-  WWM_MAX_TOKENS,
-  WWM_MIN_RESPONSE_LENGTH,
-  WWM_SCAN_INTERVAL_MS,
-  WWM_SILENCE_AFTER_CLEAR,
 } from "./constants";
-import { D, DIALOGUE_PREFIXES, FS, WWM_VIBRATION } from "./dialogue";
+import { D, DIALOGUE_PREFIXES, FS } from "./dialogue";
 import { LANGUAGES, LANG_SELECT_AUDIO, WELCOME } from "./languages";
 import {
   CLASSIFY_PROMPT,
   getConversationPrompt,
   getFaceDescPrompt,
   getScanPrompt,
-  getWalkWithMePrompt,
   READ_PROMPTS,
 } from "./prompts";
 import type { AppMode, ConvMessage, LangKey, OcrType, SavedFace, WwmUrgency } from "./types";
@@ -68,14 +56,26 @@ import {
   isHazard,
   isVisualQuestion,
   isWalkWithMeRequest,
-  normalizeWwmResponse,
-  parseWwmUrgency,
-  stripWwmTag,
-  WWM_ALWAYS_SPEAK_URGENCIES,
 } from "./utils";
+import {
+  processWwmFrame,
+  type WwmDetectedObject,
+  WWM_CONTEXT_WINDOW,
+  WWM_IMG_WIDTH,
+  WWM_INTERVAL_CAUTION,
+  WWM_INTERVAL_DANGER,
+  WWM_INTERVAL_STOP,
+  WWM_MAX_CONSECUTIVE_ERRORS,
+  WWM_MAX_TOKENS,
+  WWM_MIN_RESPONSE_LENGTH,
+  WWM_SCAN_INTERVAL_MS,
+} from "./walkWithMeEngine";
+import { normalizeYoloDetections, type YoloResponse } from "./yolov8";
 
 const GROQ_KEY: string = Constants.expoConfig?.extra?.groqKey ?? "";
 const OPENROUTER_KEY: string = Constants.expoConfig?.extra?.openRouterKey ?? "";
+const ROBOFLOW_API_KEY: string = Constants.expoConfig?.extra?.roboflowApiKey ?? "";
+const ROBOFLOW_MODEL_ID: string = Constants.expoConfig?.extra?.roboflowModelId ?? "";
 
 const playEarcon = async () => {
   Vibration.vibrate(30);
@@ -149,6 +149,7 @@ export default function SentiaApp() {
   const wwmUseAccelStepsRef = useRef(false);
   const lastAccelStepTimeRef = useRef(0);
   const wwmErrorCountRef = useRef(0);
+  const lastFrameTimeRef = useRef(0);
 
   const micTapCountRef = useRef(0);
   const micTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -664,6 +665,7 @@ export default function SentiaApp() {
     wwmClearStreakRef.current = 0;
     wwmTiltSkipsRef.current = 0;
     wwmErrorCountRef.current = 0;
+    lastFrameTimeRef.current = 0;
 
     isWalkWithMeRef.current = true;
     setIsWalkWithMe(true);
@@ -752,126 +754,87 @@ export default function SentiaApp() {
   const analyzeFrameForWwm = async () => {
     const lang = langRef.current;
     if (!cameraRef.current || !lang || !cameraReadyRef.current) return;
-
-    if (phoneTiltedRef.current) {
-      wwmTiltSkipsRef.current = Math.min(wwmTiltSkipsRef.current + 1, 9999);
-      return;
-    }
-
-    if (wwmProcessingRef.current) return;
-    wwmProcessingRef.current = true;
-
-    try {
-      setStatus("WWM: capturing...");
-
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: WWM_IMG_QUALITY,
-        base64: true,
-        skipProcessing: false,
-      });
-
-      if (!photo?.base64 || !isWalkWithMeRef.current) {
-        wwmProcessingRef.current = false;
-        return;
-      }
-
-      setStatus("WWM: analyzing...");
-
-      const resized = await ImageManipulator.manipulateAsync(
-        photo.uri,
-        [{ resize: { width: WWM_IMG_WIDTH } }],
-        {
-          base64: true,
-          compress: WWM_IMG_QUALITY,
-          format: ImageManipulator.SaveFormat.JPEG,
+    const result = await processWwmFrame(
+      {
+        cameraRef,
+        lang,
+        cameraReady: cameraReadyRef.current,
+        phoneTilted: phoneTiltedRef.current,
+        isWalkWithMe: isWalkWithMeRef.current,
+        compassHeading: compassHeadingRef.current,
+        contextBuffer: wwmContextBufferRef.current,
+        lastFrameTime: lastFrameTimeRef.current,
+        setLastFrameTime: (time) => {
+          lastFrameTimeRef.current = time;
         },
-      );
+        setStatus,
+        setDescription,
+        setWwmStatus,
+        onUrgencyChange: (urgency) => {
+          wwmCurrentUrgencyRef.current = urgency;
+        },
+        onSpeak: (text, urgency) => speakForWwm(text, lang, urgency),
+        onVibrate: (pattern) => Vibration.vibrate(pattern),
+        onContextAppend: (entry) => {
+          wwmContextBufferRef.current = [...wwmContextBufferRef.current, entry].slice(-WWM_CONTEXT_WINDOW);
+        },
+        onTiltSkip: () => {},
+        onError: (error) => {
+          wwmErrorCountRef.current += 1;
+          console.log("WWM ERROR:", error);
+          setStatus(`WWM error: ${error.message || "unknown"}`);
 
-      if (!resized.base64 || !isWalkWithMeRef.current) {
-        wwmProcessingRef.current = false;
-        return;
-      }
-
-      const prompt = getWalkWithMePrompt(lang, compassHeadingRef.current, wwmContextBufferRef.current);
-      const rawResult = await callWwmVisionAI(resized.base64, lang, prompt);
-
-      if (!isWalkWithMeRef.current) {
-        wwmProcessingRef.current = false;
-        return;
-      }
-
-      const fallbackText = D("fallback", lang);
-      if (!rawResult || rawResult.length < WWM_MIN_RESPONSE_LENGTH || rawResult === fallbackText) {
-        setStatus("WWM: no response");
-        wwmProcessingRef.current = false;
-        return;
-      }
-
-      wwmErrorCountRef.current = 0;
-
-      const normalizedResult = normalizeWwmResponse(rawResult);
-      const urgency = parseWwmUrgency(normalizedResult);
-      const spokenText = stripWwmTag(normalizedResult);
-
-      if (!spokenText) {
-        wwmProcessingRef.current = false;
-        return;
-      }
-
-      wwmCurrentUrgencyRef.current = urgency;
-      setWwmStatus(urgency);
-      setStatus(`WWM: ${urgency.toLowerCase()}`);
-      wwmContextBufferRef.current = [...wwmContextBufferRef.current, `[${urgency}] ${spokenText}`].slice(-WWM_CONTEXT_WINDOW);
-
-      const isDuplicate = spokenText === wwmLastResponseRef.current;
-
-      if (urgency === "CLEAR") {
-        wwmClearStreakRef.current += 1;
-        Vibration.vibrate(WWM_VIBRATION.CLEAR);
-
-        if (wwmClearStreakRef.current <= WWM_SILENCE_AFTER_CLEAR) {
-          wwmLastResponseRef.current = spokenText;
-          setDescription(spokenText);
-          await speakForWwm(spokenText, lang, "CLEAR");
-        } else if (wwmClearStreakRef.current % 4 === 0) {
-          Vibration.vibrate(WWM_VIBRATION.CLEAR);
-        }
-      } else {
-        wwmClearStreakRef.current = 0;
-        const mustSpeak = WWM_ALWAYS_SPEAK_URGENCIES.includes(urgency);
-
-        if (!isDuplicate || mustSpeak) {
-          wwmLastResponseRef.current = spokenText;
-          setDescription(spokenText);
-          Vibration.vibrate(WWM_VIBRATION[urgency]);
-
-          if (urgency === "DANGER") {
-            await speakForWwm(spokenText, lang, urgency);
-            if (isWalkWithMeRef.current) {
-              await new Promise<void>((resolve) => setTimeout(resolve, 300));
-              await speakForWwm(spokenText, lang, urgency);
-            }
-          } else {
-            await speakForWwm(spokenText, lang, urgency);
+          if (wwmErrorCountRef.current >= WWM_MAX_CONSECUTIVE_ERRORS) {
+            const currentLang = langRef.current;
+            if (currentLang) speak(D("wwm_api_error", currentLang), currentLang);
+            stopWalkWithMe(true);
+            wwmErrorCountRef.current = 0;
           }
-        } else {
-          Vibration.vibrate(WWM_VIBRATION.CAUTION);
-        }
-      }
-    } catch (error: any) {
-      wwmErrorCountRef.current += 1;
-      console.log("WWM ERROR:", error);
-      setStatus(`WWM error: ${error?.message ?? "unknown"}`);
+        },
+        detectObjectsWithYolo: detectObjectsWithYolo,
+        callVisionWithSignal: callWwmVisionAI,
+        ImageManipulator,
+      },
+      wwmProcessingRef,
+      wwmLastResponseRef,
+      wwmClearStreakRef,
+      wwmCurrentUrgencyRef,
+      wwmTiltSkipsRef,
+    );
 
-      if (wwmErrorCountRef.current >= WWM_MAX_CONSECUTIVE_ERRORS) {
-        const lang = langRef.current;
-        if (lang) speak(D("wwm_api_error", lang), lang);
-        stopWalkWithMe(true);
-        wwmErrorCountRef.current = 0;
-      }
-    } finally {
-      wwmProcessingRef.current = false;
+    if (result) {
+      wwmErrorCountRef.current = 0;
     }
+  };
+
+  const detectObjectsWithYolo = async (base64: string, signal: AbortSignal): Promise<WwmDetectedObject[]> => {
+    if (!ROBOFLOW_API_KEY || !ROBOFLOW_MODEL_ID) return [];
+
+    const modelId = ROBOFLOW_MODEL_ID.trim();
+    const endpoint = `https://detect.roboflow.com/${modelId}?api_key=${encodeURIComponent(ROBOFLOW_API_KEY)}`;
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: base64,
+      signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`YOLO HTTP ${response.status}: ${errText}`);
+    }
+
+    const data: YoloResponse = await response.json();
+    const normalized = normalizeYoloDetections(
+      data.predictions ?? [],
+      data.image?.width ?? WWM_IMG_WIDTH,
+      data.image?.height ?? WWM_IMG_WIDTH,
+    );
+
+    return normalized.objects;
   };
 
   const twoStepOcr = async (voiceHint: OcrType = "general", question?: string): Promise<string | null> => {
@@ -969,13 +932,14 @@ export default function SentiaApp() {
     return "general";
   };
 
-  const groqRequest = async (body: object): Promise<any> => {
+  const groqRequest = async (body: object, signal?: AbortSignal): Promise<any> => {
     if (USE_DIRECT) {
       if (!GROQ_KEY) throw new Error("GROQ_KEY missing — check app.config.js extra.groqKey and restart with: npx expo start --clear");
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
         body: JSON.stringify(body),
+        signal,
       });
       if (!response.ok) {
         const errText = await response.text();
@@ -987,11 +951,12 @@ export default function SentiaApp() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
     return response.json();
   };
 
-  const openRouterRequest = async (body: object): Promise<any> => {
+  const openRouterRequest = async (body: object, signal?: AbortSignal): Promise<any> => {
     if (USE_DIRECT) {
       if (!OPENROUTER_KEY) throw new Error("OPENROUTER_KEY missing — check app.config.js extra.openRouterKey and restart with: npx expo start --clear");
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -1003,6 +968,7 @@ export default function SentiaApp() {
           "X-Title": "Sentia",
         },
         body: JSON.stringify(body),
+        signal,
       });
       if (!response.ok) {
         const errText = await response.text();
@@ -1014,11 +980,12 @@ export default function SentiaApp() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
     return response.json();
   };
 
-  const callWwmVisionAI = async (base64: string, lang: LangKey, prompt: string): Promise<string> => {
+  const callWwmVisionAI = async (base64: string, lang: LangKey, prompt: string, signal: AbortSignal): Promise<string> => {
     const imageData = `data:image/jpeg;base64,${base64}`;
     if (USE_DIRECT && !GROQ_KEY && !OPENROUTER_KEY) return "";
 
@@ -1037,10 +1004,11 @@ export default function SentiaApp() {
             ],
           },
         ],
-      });
+      }, signal);
       const text = data?.choices?.[0]?.message?.content?.trim();
       if (text && text.length >= WWM_MIN_RESPONSE_LENGTH) return text;
     } catch (error: any) {
+      if (error?.name === "AbortError") throw error;
       console.log("WWM Gemini failed:", error?.message);
     }
 
@@ -1058,10 +1026,11 @@ export default function SentiaApp() {
             ],
           },
         ],
-      });
+      }, signal);
       const text = data?.choices?.[0]?.message?.content?.trim();
       if (text && text.length >= WWM_MIN_RESPONSE_LENGTH) return text;
     } catch (error: any) {
+      if (error?.name === "AbortError") throw error;
       console.log("WWM Llama fallback failed:", error?.message);
     }
 
