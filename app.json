@@ -13,7 +13,8 @@
       "infoPlist": {
         "NSMotionUsageDescription": "Sentia uses motion data to detect steps and provide real-time navigation assistance for visually impaired users.",
         "NSCameraUsageDescription": "Sentia uses the camera to help visually impaired users understand their surroundings.",
-        "NSMicrophoneUsageDescription": "Sentia uses the microphone for voice commands and interaction."
+        "NSMicrophoneUsageDescription": "Sentia uses the microphone for voice commands and interaction.",
+        "NSLocationWhenInUseUsageDescription": "Sentia needs your location to tell you where you are."
       }
     },
     "android": {
@@ -22,7 +23,9 @@
         "CAMERA",
         "RECORD_AUDIO",
         "VIBRATE",
-        "INTERNET"
+        "INTERNET",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -50,6 +53,13 @@
           "dark": {
             "backgroundColor": "#000000"
           }
+        }
+      ],
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Sentia needs your location to tell you where you are."
         }
       ]
     ],
