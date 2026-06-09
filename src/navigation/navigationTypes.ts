@@ -1,113 +1,180 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Sentia — Navigation Module: Types
-// Owner: Navigation Team
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * navigationTypes.ts
+ * Sentia — AI-Powered Accessibility Application
+ * Navigation Team: GPS Tracking Engine Type Definitions
+ *
+ * Central type registry for all navigation-related data structures.
+ * Designed to be extended by: Real-Time Navigation, Route Recalculation,
+ * Off-Route Detection, WalkWithMe, and SOS Live Tracking.
+ */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Supported languages
-//
-// To add a new language (e.g. Gujarati):
-//   1. Append its BCP-47 code here:   "en" | "hi" | "mr" | "gu"
-//   2. Add a template entry in locationService.ts → LOCATION_TEMPLATES
-//   3. Add a template entry in locationService.ts → PARTIAL_TEMPLATES
-//   4. Add error messages in locationService.ts   → USER_ERROR_MESSAGES
+// PERMISSION TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SentiaLanguage = "en" | "hi" | "mr";
+/**
+ * Represents the result of a location permission request.
+ */
+export type LocationPermissionStatus =
+  | "granted"
+  | "denied"
+  | "undetermined"
+  | "restricted"; // iOS only — parental controls / MDM
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Result wrapper  (avoids thrown errors crossing module boundaries)
+// COORDINATE & LOCATION TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Result<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: LocationError };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Error taxonomy
-// ─────────────────────────────────────────────────────────────────────────────
-
-export enum LocationErrorCode {
-  PERMISSION_DENIED = "PERMISSION_DENIED",
-  GPS_UNAVAILABLE = "GPS_UNAVAILABLE",
-  GEOCODE_FAILED = "GEOCODE_FAILED",
-  NETWORK_FAILURE = "NETWORK_FAILURE",
-  UNKNOWN = "UNKNOWN",
-}
-
-export interface LocationError {
-  code: LocationErrorCode;
-  /** Human-readable detail for logging / debugging. NOT shown to the user. */
-  detail: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GPS coordinates
-//
-// NOTE: `accuracyMetres` is intentionally typed as `number | undefined` rather
-// than an optional property (`accuracyMetres?: number`).
-//
-// Reason: TypeScript's `exactOptionalPropertyTypes` flag differentiates between
-// a key being ABSENT and a key being present but `undefined`. expo-location
-// returns `coords.accuracy` as `number | null`, and we normalise null → undefined
-// at the call site. Using `number | undefined` here keeps the type honest and
-// prevents TS2322 errors when assigning the normalised value.
-// ─────────────────────────────────────────────────────────────────────────────
-
+/**
+ * A raw GPS coordinate pair.
+ */
 export interface Coordinates {
-  latitude: number;
-  longitude: number;
-  /** Accuracy in metres as reported by the device. `undefined` if unavailable. */
-  accuracyMetres: number | undefined;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Parsed address components
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface ReadableAddress {
-  /** Street / road name  e.g. "Senapati Bapat Marg" — empty string if unknown */
-  road: string;
-  /** Locality / area      e.g. "Dadar West"          — empty string if unknown */
-  locality: string;
-  /** City                 e.g. "Mumbai"               — empty string if unknown */
-  city: string;
-  /**
-   * Raw Expo geocode record preserved for callers that need extra fields
-   * (postal code, country, etc.) without re-fetching.
-   */
-  raw: ExpoGeocodeRecord;
+  readonly latitude: number;
+  readonly longitude: number;
 }
 
 /**
- * Subset of Expo's LocationGeocodedAddress we actually use.
- *
- * Typed explicitly so the rest of the codebase is decoupled from
- * expo-location's internal types and survives Expo SDK upgrades.
+ * Extended coordinate with optional altitude.
+ * Used internally by the tracking engine.
  */
-export interface ExpoGeocodeRecord {
-  street: string | null;
-  district: string | null;
-  subregion: string | null;
-  city: string | null;
-  region: string | null;
-  country: string | null;
-  postalCode: string | null;
-  name: string | null;
-  isoCountryCode: string | null;
+export interface ExtendedCoordinates extends Coordinates {
+  readonly altitude: number | null;
+  readonly altitudeAccuracy: number | null;
+}
+
+/**
+ * A fully enriched location snapshot produced by the tracker.
+ * This is the canonical location object used throughout the app.
+ *
+ * Future teams: extend this via intersection types, not mutation.
+ * e.g. type NavigationLocation = TrackedLocation & { bearing: number }
+ */
+export interface TrackedLocation {
+  /** WGS-84 latitude in decimal degrees */
+  readonly latitude: number;
+  /** WGS-84 longitude in decimal degrees */
+  readonly longitude: number;
+  /** Altitude in metres above sea level (null if unavailable) */
+  readonly altitude: number | null;
+  /** Horizontal accuracy radius in metres (lower = better) */
+  readonly accuracy: number | null;
+  /** Altitude accuracy in metres (null if unavailable) */
+  readonly altitudeAccuracy: number | null;
+  /** Direction of travel in degrees (0–360, null if stationary) */
+  readonly heading: number | null;
+  /** Speed in metres per second (null if unavailable) */
+  readonly speed: number | null;
+  /** Unix timestamp (ms) when this fix was acquired */
+  readonly timestamp: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Location description  (the final spoken / displayed string)
+// TRACKING STATE TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface LocationDescription {
-  /** The sentence ready to be read aloud or displayed. */
-  sentence: string;
-  /** The language the sentence is in. */
-  language: SentiaLanguage;
-  /** The underlying address data used to build the sentence. */
-  address: ReadableAddress;
-  /** The GPS fix used. */
-  coordinates: Coordinates;
+/**
+ * Represents the lifecycle phase of the location tracker.
+ */
+export type TrackingStatus =
+  | "idle" // Not started
+  | "requesting" // Awaiting permission or first fix
+  | "active" // Receiving updates normally
+  | "paused" // Temporarily halted (e.g. app in background)
+  | "stopped" // Cleanly shut down
+  | "error"; // Failed — see TrackingState.error
+
+/**
+ * Categorised error codes for the tracking engine.
+ * Allows consumers to react differently to different failure modes.
+ */
+export type TrackingErrorCode =
+  | "PERMISSION_DENIED"
+  | "GPS_DISABLED"
+  | "GPS_UNAVAILABLE"
+  | "LOCATION_TIMEOUT"
+  | "ALREADY_TRACKING"
+  | "NOT_TRACKING"
+  | "UNKNOWN_ERROR";
+
+/**
+ * Structured error object produced by the tracking engine.
+ * Never throws raw JS errors to consumers.
+ */
+export interface TrackingError {
+  readonly code: TrackingErrorCode;
+  readonly message: string;
+  /** Original underlying error if available (for debugging/logging) */
+  readonly cause?: unknown;
+}
+
+/**
+ * Full snapshot of the tracker's current internal state.
+ * Read-only — never mutate this object.
+ */
+export interface TrackingState {
+  readonly status: TrackingStatus;
+  readonly latestLocation: TrackedLocation | null;
+  readonly lastUpdatedAt: number | null; // Unix ms
+  readonly error: TrackingError | null;
+  readonly permissionStatus: LocationPermissionStatus;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUBSCRIPTION TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Callback signature for location update subscribers.
+ * The location object is always a complete, valid TrackedLocation.
+ */
+export type LocationUpdateCallback = (location: TrackedLocation) => void;
+
+/**
+ * Callback signature for error subscribers.
+ * Allows consumers to react to tracker failures without crashing.
+ */
+export type TrackingErrorCallback = (error: TrackingError) => void;
+
+/**
+ * Handle returned by subscribeToLocationUpdates().
+ * Call unsubscribe() to cleanly remove the listener.
+ */
+export interface LocationSubscription {
+  /** Unique ID for this subscription (UUID v4) */
+  readonly id: string;
+  /** Call this to stop receiving updates. Idempotent — safe to call multiple times. */
+  readonly unsubscribe: () => void;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIGURATION TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Tuning parameters for the GPS watcher.
+ * Defaults are set in locationTracker.ts — override per-deployment only.
+ *
+ * Future: pass custom config to startLocationTracking() for different
+ * accuracy profiles (e.g. power-saving mode for WalkWithMe background mode).
+ */
+export interface LocationTrackerConfig {
+  /**
+   * Minimum distance (metres) the device must move before a new update
+   * is dispatched to subscribers. Prevents micro-jitter updates.
+   * Default: 5
+   */
+  readonly minimumDisplacementMeters: number;
+
+  /**
+   * How long (ms) to wait for a GPS fix before emitting a timeout error.
+   * Default: 15000 (15 seconds)
+   */
+  readonly timeoutMs: number;
+
+  /**
+   * Maximum age (ms) of a cached location that is still considered valid
+   * as an initial result before a fresh fix arrives.
+   * Default: 10000 (10 seconds)
+   */
+  readonly maximumAgeMs: number;
 }
