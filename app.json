@@ -62,7 +62,19 @@
       "openRouterKey": "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",
       "proxyBaseUrl": "",
       "roboflowApiKey": "",
-      "roboflowModelId": ""
+      "roboflowModelId": "",
+      "android": {
+        "permissions": [
+          "ACTIVITY_RECOGNITION",
+          "CAMERA",
+          "RECORD_AUDIO",
+          "VIBRATE",
+          "INTERNET",
+          "ACCESS_FINE_LOCATION",
+          "SEND_SMS",
+          "CALL_PHONE"
+        ]
+      }
     }
   }
 }
